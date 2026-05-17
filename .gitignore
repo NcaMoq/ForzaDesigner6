@@ -1,0 +1,52 @@
+# PyInstaller / build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Local test outputs
+*.png.json
+*_test_output.json
+
+# Local FH6 RE artifacts (memory dumps, scan results — huge, do not push)
+.fd6_*.pkl
+.fd6_*.json
+
+# Local test inputs left in repo root
+BluePsyduckTest*.json
+
+# RE workshop notes — kept locally, not pushed
+memory*.md
+
+# Third-party tooling vendored locally — do not redistribute.
+# Only the three project assets below are whitelisted.
+tools/*
+!tools/SplashScreen.gif
+!tools/fd6.ico
+!tools/fd6_128.png
