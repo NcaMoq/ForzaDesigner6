@@ -69,6 +69,32 @@ class GenerationWorker(QObject):
                 offset = ((side - img.size[0]) // 2, (side - img.size[1]) // 2)
                 square.paste(img, offset)
                 img = square
+
+            # Edge-buffer padding (applied to every generation, transparent or not).
+            # If any of the source pixels run all the way to the canvas edge, FH6's
+            # vinyl renderer treats shapes whose extents touch that edge as
+            # unbounded, which produces large smears and corner artifacts after
+            # injection. Padding the source by ~8% on each side gives the shape
+            # generator room so even shapes that land on the outermost rows/cols
+            # of the *content* stay several pixels away from the actual canvas
+            # edge once we hand off to the engine.
+            BUFFER_FRAC = 0.08  # 8% per side → 16% larger output canvas
+            pad_px = max(8, int(round(max(img.size) * BUFFER_FRAC)))
+            new_w = img.size[0] + 2 * pad_px
+            new_h = img.size[1] + 2 * pad_px
+            if self.sticker_mode:
+                buffered = Image.new("RGB", (new_w, new_h), (0, 0, 0))
+                buffered.paste(img, (pad_px, pad_px))
+                img = buffered
+                if alpha_mask is not None:
+                    padded_alpha = np.zeros((new_h, new_w), dtype=np.uint8)
+                    src_h, src_w = alpha_mask.shape[:2]
+                    padded_alpha[pad_px:pad_px + src_h, pad_px:pad_px + src_w] = alpha_mask
+                    alpha_mask = padded_alpha
+            else:
+                buffered = Image.new("RGB", (new_w, new_h), (255, 255, 255))
+                buffered.paste(img, (pad_px, pad_px))
+                img = buffered
             # Downscale to profile.max_resolution along the longer side.
             mr = self.profile.max_resolution
             if max(img.size) > mr:

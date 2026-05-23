@@ -9,7 +9,7 @@ pyinstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
-    --name "FD64FH6354221" ^
+    --name "FD6MultiSupport" ^
     --icon "tools\fd6.ico" ^
     --add-data "fd6\settings\profiles;fd6\settings\profiles" ^
     --add-data "fd6\inject\patterns;fd6\inject\patterns" ^
@@ -46,6 +46,17 @@ pyinstaller ^
     --hidden-import fd6.inject.fh6_injector ^
     --hidden-import fd6.inject.game_profiles ^
     --hidden-import fd6.inject.rtti_locator ^
+    --hidden-import fd6.suite ^
+    --hidden-import fd6.ac ^
+    --hidden-import fd6.ac.profiles ^
+    --hidden-import fd6.ac.livery_paths ^
+    --hidden-import fd6.ac.car_catalog ^
+    --hidden-import fd6.ac.texture_pipeline ^
+    --hidden-import fd6.ac.slot_planner ^
+    --hidden-import fd6.ac.livery_writer ^
+    --hidden-import fd6.gui.game_suite_dialog ^
+    --hidden-import fd6.gui.ac_settings_panel ^
+    --hidden-import fd6.gui.texture_preview_panel ^
     --hidden-import fd6.gui.inject_worker ^
     --hidden-import fd6.gui.inject_dialog ^
     --hidden-import fd6.gui.splash ^
@@ -58,5 +69,5 @@ pyinstaller ^
     fd6\__main__.py
 
 echo.
-echo Built: dist\FD64FH6354221.exe
+echo Built: dist\FD6MultiSupport.exe
 endlocal

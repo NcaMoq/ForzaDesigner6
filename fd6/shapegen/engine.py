@@ -295,6 +295,14 @@ class Engine:
         types = [t for t in p.shape_types if t]
         if not types:
             types = ["rotated_ellipse"]
+        # Per-iteration type rotation. Without this, every worker picks a type
+        # at random and ellipses (which fit organic content best) win the
+        # fitness comparison nearly every iteration, so checked rectangle /
+        # rotated_rectangle types produce zero shapes in the final JSON. With
+        # rotation, each iteration is locked to a single type so every
+        # checked type gets dedicated commit slots in proportion to how many
+        # types are enabled.
+        type_cursor = 0
         save_at = set(p.save_at)
         try:
             consecutive_skips = 0
@@ -303,8 +311,11 @@ class Engine:
                 while self._pause and not self._stop:
                     time.sleep(0.05)
 
+                iter_types = [types[type_cursor % len(types)]]
+                type_cursor += 1
+
                 refined_score, refined = self._parallel_search(
-                    types, max(1, p.random_samples), max(1, p.mutated_samples),
+                    iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
                 )
 
                 # Sticker mode: refined must fit essentially entirely inside
@@ -316,7 +327,7 @@ class Engine:
                         if refined is not None and refined_score != float("inf"):
                             break
                         refined_score, refined = self._parallel_search(
-                            types, max(1, p.random_samples), max(1, p.mutated_samples),
+                            iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
                         )
                         sticker_attempts += 1
                     else:
