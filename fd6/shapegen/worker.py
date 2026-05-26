@@ -73,28 +73,36 @@ class GenerationWorker(QObject):
             # Edge-buffer padding (applied to every generation, transparent or not).
             # If any of the source pixels run all the way to the canvas edge, FH6's
             # vinyl renderer treats shapes whose extents touch that edge as
-            # unbounded, which produces large smears and corner artifacts after
-            # injection. Padding the source by ~8% on each side gives the shape
-            # generator room so even shapes that land on the outermost rows/cols
-            # of the *content* stay several pixels away from the actual canvas
-            # edge once we hand off to the engine.
+            # unbounded, producing large smears and corner artifacts after
+            # injection. The fix is to surround the content with a TRANSPARENT
+            # ring the engine refuses to place shapes in — regardless of whether
+            # the source image itself was transparent or not. We do this by
+            # always carrying an alpha_mask through to the engine: content area
+            # = 255 (allowed), buffer ring = 0 (skipped). The RGB color we paint
+            # the buffer doesn't matter visually because alpha=0 hides it in
+            # the live preview and excludes it from injected output.
             BUFFER_FRAC = 0.08  # 8% per side → 16% larger output canvas
             pad_px = max(8, int(round(max(img.size) * BUFFER_FRAC)))
-            new_w = img.size[0] + 2 * pad_px
-            new_h = img.size[1] + 2 * pad_px
-            if self.sticker_mode:
-                buffered = Image.new("RGB", (new_w, new_h), (0, 0, 0))
-                buffered.paste(img, (pad_px, pad_px))
-                img = buffered
-                if alpha_mask is not None:
-                    padded_alpha = np.zeros((new_h, new_w), dtype=np.uint8)
-                    src_h, src_w = alpha_mask.shape[:2]
-                    padded_alpha[pad_px:pad_px + src_h, pad_px:pad_px + src_w] = alpha_mask
-                    alpha_mask = padded_alpha
-            else:
-                buffered = Image.new("RGB", (new_w, new_h), (255, 255, 255))
-                buffered.paste(img, (pad_px, pad_px))
-                img = buffered
+            src_w, src_h = img.size
+            new_w = src_w + 2 * pad_px
+            new_h = src_h + 2 * pad_px
+
+            # Build a content-area alpha_mask if we don't have one yet
+            # (non-transparent source, or non-sticker mode where alpha was
+            # already composited onto white).
+            if alpha_mask is None:
+                alpha_mask = np.full((src_h, src_w), 255, dtype=np.uint8)
+            # Pad the alpha mask with zeros so the engine ignores the buffer ring.
+            padded_alpha = np.zeros((new_h, new_w), dtype=np.uint8)
+            ah, aw = alpha_mask.shape[:2]
+            padded_alpha[pad_px:pad_px + ah, pad_px:pad_px + aw] = alpha_mask
+            alpha_mask = padded_alpha
+
+            # White as the buffer fill keeps the (otherwise hidden) RGB neutral
+            # and avoids black smears if any downstream consumer ignores alpha.
+            buffered = Image.new("RGB", (new_w, new_h), (255, 255, 255))
+            buffered.paste(img, (pad_px, pad_px))
+            img = buffered
             # Downscale to profile.max_resolution along the longer side.
             mr = self.profile.max_resolution
             if max(img.size) > mr:

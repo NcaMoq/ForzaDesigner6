@@ -5,14 +5,91 @@ import numpy as np
 from fd6.shapegen.shapes.base import Shape
 
 
-def rms_error(a: np.ndarray, b: np.ndarray, alpha_mask: np.ndarray | None = None) -> float:
+# Edge-weighted scoring: how much more an edge pixel counts toward fitness vs
+# a smooth interior pixel. With EDGE_BOOST=6, a shape that nails a 3px pupil
+# outline is worth more than a shape that smooths over a 100px cheek block —
+# without this, the random sampler drifts toward big translucent ellipses
+# because they get good *averaged* error even when they miss every salient
+# detail (eyes, mouths, hard outlines). Cheap Sobel magnitude, normalized to
+# [1, EDGE_BOOST] so smooth regions still contribute baseline weight 1.
+EDGE_BOOST = 6.0
+
+
+def compute_edge_weight(
+    target: np.ndarray,
+    alpha_mask: np.ndarray | None = None,
+    boost: float = EDGE_BOOST,
+) -> np.ndarray:
+    """Build an H×W float32 importance map for `target`.
+
+    Combines a Sobel-gradient magnitude (normalized 0..1) with the alpha mask
+    so the result is:
+        - 0       where alpha_mask says transparent / buffer (ignored entirely)
+        - 1       in smooth interior regions
+        - up to `boost` on the strongest edges
+
+    Pass this to `rms_error` / `precompute_canvas_error` / `score_shape` /
+    `composite` as the `edge_weight` keyword. Build it ONCE per generation
+    (the target doesn't change) and reuse for every score.
+    """
+    h, w = target.shape[:2]
+    # Luminance — cheap proxy for "what the eye sees" so eye/mouth/outline
+    # edges register on grayscale gradients even when the RGB diff is mild.
+    lum = (
+        target[:, :, 0].astype(np.float32) * 0.299
+        + target[:, :, 1].astype(np.float32) * 0.587
+        + target[:, :, 2].astype(np.float32) * 0.114
+    )
+    # 3×3 Sobel kernels expressed as a manual convolution (avoids a SciPy
+    # dependency, fast enough since we only run it once per generation).
+    pad = np.pad(lum, 1, mode="edge")
+    gx = (
+        -1.0 * pad[0:h, 0:w]   + 0.0 * pad[0:h, 1:w+1]   + 1.0 * pad[0:h, 2:w+2]
+        + -2.0 * pad[1:h+1, 0:w] + 0.0 * pad[1:h+1, 1:w+1] + 2.0 * pad[1:h+1, 2:w+2]
+        + -1.0 * pad[2:h+2, 0:w] + 0.0 * pad[2:h+2, 1:w+1] + 1.0 * pad[2:h+2, 2:w+2]
+    )
+    gy = (
+        -1.0 * pad[0:h, 0:w]   + -2.0 * pad[0:h, 1:w+1]   + -1.0 * pad[0:h, 2:w+2]
+        + 0.0 * pad[1:h+1, 0:w] + 0.0 * pad[1:h+1, 1:w+1] + 0.0 * pad[1:h+1, 2:w+2]
+        + 1.0 * pad[2:h+2, 0:w] + 2.0 * pad[2:h+2, 1:w+1] + 1.0 * pad[2:h+2, 2:w+2]
+    )
+    mag = np.sqrt(gx * gx + gy * gy)
+    max_mag = float(mag.max())
+    if max_mag < 1e-6:
+        # Flat image — every pixel is baseline weight.
+        norm = np.ones((h, w), dtype=np.float32)
+    else:
+        norm = 1.0 + (boost - 1.0) * (mag / max_mag).astype(np.float32)
+    if alpha_mask is not None:
+        norm = norm * (alpha_mask > 0).astype(np.float32)
+    return norm
+
+
+def rms_error(
+    a: np.ndarray,
+    b: np.ndarray,
+    alpha_mask: np.ndarray | None = None,
+    edge_weight: np.ndarray | None = None,
+) -> float:
     """RMS pixel error between two (H, W, 3) uint8 images. Lower is better.
 
     If `alpha_mask` (H, W) uint8 is given, only pixels where alpha>0 contribute; transparent
     pixels are ignored (sticker mode). The RMS is normalized by the count of contributing pixels.
+
+    If `edge_weight` (H, W) float32 is given, per-pixel squared error is
+    multiplied by the weight (smooth interior=1, edge≈EDGE_BOOST). When
+    combined with `alpha_mask`, the weight already encodes the alpha gate so
+    transparent pixels stay at zero.
     """
     diff = a.astype(np.int32) - b.astype(np.int32)
     sq = diff * diff
+    if edge_weight is not None:
+        weight = edge_weight[:, :, None]
+        total = float((sq * weight).sum())
+        n = float(edge_weight.sum() * 3)
+        if n < 1:
+            return 0.0
+        return float(np.sqrt(total / n))
     if alpha_mask is None:
         return float(np.sqrt(sq.mean()))
     weight = (alpha_mask > 0)[:, :, None].astype(np.float32)
@@ -59,6 +136,7 @@ def composite(
     shape: Shape,
     target: np.ndarray,
     alpha_mask: np.ndarray | None = None,
+    edge_weight: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
     """Composite shape over current canvas with optimal color. Return (new_canvas, new_rms).
 
@@ -87,7 +165,7 @@ def composite(
     blended = m * (a * region_tgt_color + (1.0 - a) * region_cur) + (1.0 - m) * region_cur
     new[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
     shape.color = color
-    return new, rms_error(new, target, alpha_mask)
+    return new, rms_error(new, target, alpha_mask, edge_weight)
 
 
 # In sticker mode, virtually every "solid" pixel of a candidate shape must sit
@@ -103,6 +181,7 @@ def precompute_canvas_error(
     current: np.ndarray,
     target: np.ndarray,
     alpha_mask: np.ndarray | None = None,
+    edge_weight: np.ndarray | None = None,
 ) -> tuple[float, float]:
     """Return (full_canvas_squared_error, normalizer_n) for the current canvas.
 
@@ -114,7 +193,16 @@ def precompute_canvas_error(
 
     The math is identical to what score_shape did inline before. Same
     result, ~N× less work for the random-search phase.
+
+    When `edge_weight` is provided it supersedes the boolean alpha gate (the
+    weight map already folds in alpha=0 from compute_edge_weight).
     """
+    if edge_weight is not None:
+        weight_full = edge_weight[:, :, None]
+        diff = (current.astype(np.float32) - target.astype(np.float32)) ** 2
+        full_sq = float((diff * weight_full).sum())
+        n = float(edge_weight.sum() * 3)
+        return full_sq, n
     if alpha_mask is None:
         diff = current.astype(np.int32) - target.astype(np.int32)
         full_sq = float((diff * diff).sum())
@@ -135,6 +223,7 @@ def score_shape(
     *,
     canvas_full_sq: float | None = None,
     canvas_norm: float | None = None,
+    edge_weight: np.ndarray | None = None,
 ) -> tuple[float, tuple[int, int, int, int]]:
     """Score a candidate without modifying the working canvas. Returns (rms_if_committed, optimal_color).
 
@@ -180,6 +269,19 @@ def score_shape(
     m = (mask_local.astype(np.float32) / 255.0)[:, :, None]
     blended = m * (a * src + (1.0 - a) * region_cur) + (1.0 - m) * region_cur
     diff_in = blended - region_tgt
+    # Edge-weighted path supersedes the boolean alpha gate when present.
+    if edge_weight is not None:
+        if canvas_full_sq is None or canvas_norm is None:
+            full_sq, n = precompute_canvas_error(current, target, alpha_mask, edge_weight)
+        else:
+            full_sq, n = canvas_full_sq, canvas_norm
+        weight_region = edge_weight[y0:y1, x0:x1][:, :, None]
+        region_old_sq = float((((region_cur - region_tgt) ** 2) * weight_region).sum())
+        region_new_sq = float(((diff_in ** 2) * weight_region).sum())
+        total_sq = full_sq - region_old_sq + region_new_sq
+        if n < 1:
+            return 0.0, color
+        return float(np.sqrt(max(0.0, total_sq) / n)), color
     if alpha_mask is None:
         if canvas_full_sq is None or canvas_norm is None:
             full_sq, n_px = precompute_canvas_error(current, target, None)
@@ -189,7 +291,7 @@ def score_shape(
         region_new_sq = float((diff_in ** 2).sum())
         total_sq = full_sq - region_old_sq + region_new_sq
         return float(np.sqrt(max(0.0, total_sq) / n_px)), color
-    # Sticker mode: weighted RMS, only opaque pixels contribute
+    # Sticker mode (no edge weight): weighted RMS, only opaque pixels contribute
     if canvas_full_sq is None or canvas_norm is None:
         full_sq, n = precompute_canvas_error(current, target, alpha_mask)
     else:

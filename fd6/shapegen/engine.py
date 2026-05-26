@@ -13,7 +13,13 @@ from multiprocessing import shared_memory
 import numpy as np
 
 from fd6.shapegen.profile import Profile
-from fd6.shapegen.scoring import composite, precompute_canvas_error, rms_error, score_shape
+from fd6.shapegen.scoring import (
+    composite,
+    compute_edge_weight,
+    precompute_canvas_error,
+    rms_error,
+    score_shape,
+)
 from fd6.shapegen.shapes import Shape, random_shape
 
 
@@ -99,6 +105,8 @@ class EngineEvent:
 
 _W_TARGET: np.ndarray | None = None
 _W_ALPHA: np.ndarray | None = None
+_W_EDGE_WEIGHT: np.ndarray | None = None  # ndarray view onto _W_EDGE_SHM (LIVE — engine rewrites periodically)
+_W_EDGE_SHM: shared_memory.SharedMemory | None = None
 _W_CANVAS_SHM: shared_memory.SharedMemory | None = None
 _W_CANVAS: np.ndarray | None = None
 
@@ -107,14 +115,24 @@ def _init_worker(
     target_bytes: bytes, target_shape: tuple,
     canvas_shm_name: str, canvas_shape: tuple,
     alpha_bytes: bytes | None, alpha_shape: tuple | None,
+    edge_shm_name: str | None, edge_shape: tuple | None,
 ) -> None:
-    """Subprocess startup hook. Wires up shared canvas + immutable target/alpha."""
-    global _W_TARGET, _W_ALPHA, _W_CANVAS_SHM, _W_CANVAS
+    """Subprocess startup hook. Wires up shared canvas + immutable target/alpha + LIVE edge weight."""
+    global _W_TARGET, _W_ALPHA, _W_EDGE_WEIGHT, _W_EDGE_SHM, _W_CANVAS_SHM, _W_CANVAS
     _W_TARGET = np.frombuffer(target_bytes, dtype=np.uint8).reshape(target_shape).copy()
     if alpha_bytes is not None and alpha_shape is not None:
         _W_ALPHA = np.frombuffer(alpha_bytes, dtype=np.uint8).reshape(alpha_shape).copy()
     else:
         _W_ALPHA = None
+    if edge_shm_name is not None and edge_shape is not None:
+        # Attach to the LIVE edge-weight shared memory — workers see periodic
+        # residual updates from the main process between iterations without
+        # needing per-iteration IPC.
+        _W_EDGE_SHM = shared_memory.SharedMemory(name=edge_shm_name)
+        _W_EDGE_WEIGHT = np.ndarray(edge_shape, dtype=np.float32, buffer=_W_EDGE_SHM.buf)
+    else:
+        _W_EDGE_SHM = None
+        _W_EDGE_WEIGHT = None
     _W_CANVAS_SHM = shared_memory.SharedMemory(name=canvas_shm_name)
     _W_CANVAS = np.ndarray(canvas_shape, dtype=np.uint8, buffer=_W_CANVAS_SHM.buf)
 
@@ -131,24 +149,26 @@ def _worker_independent_search(args: tuple) -> tuple:
     scratch, which dominated the per-shape cost at high max_resolution.
     Result is mathematically identical; just no longer recomputed N times.
     """
-    (types, n_random, n_mutate, w, h, seed) = args
+    (types, n_random, n_mutate, w, h, seed, max_size_frac) = args
     canvas = _W_CANVAS
     target = _W_TARGET
     alpha = _W_ALPHA
+    edge_w = _W_EDGE_WEIGHT
     rng = random.Random(seed)
 
     # Precompute once for this batch — see precompute_canvas_error docstring.
-    canvas_full_sq, canvas_norm = precompute_canvas_error(canvas, target, alpha)
+    canvas_full_sq, canvas_norm = precompute_canvas_error(canvas, target, alpha, edge_w)
 
     # Random search
     best_score = float("inf")
     best_color = None
     best_shape = None
     for _ in range(max(1, n_random)):
-        s = random_shape(rng, w, h, types)
+        s = random_shape(rng, w, h, types, max_size_frac=max_size_frac)
         score, color = score_shape(s, canvas, target, alpha,
                                    canvas_full_sq=canvas_full_sq,
-                                   canvas_norm=canvas_norm)
+                                   canvas_norm=canvas_norm,
+                                   edge_weight=edge_w)
         if score < best_score:
             best_score, best_color, best_shape = score, color, s
     if best_shape is None:
@@ -162,7 +182,8 @@ def _worker_independent_search(args: tuple) -> tuple:
         cand = best_shape.mutate(rng, w, h)
         score, color = score_shape(cand, canvas, target, alpha,
                                    canvas_full_sq=canvas_full_sq,
-                                   canvas_norm=canvas_norm)
+                                   canvas_norm=canvas_norm,
+                                   edge_weight=edge_w)
         if score < best_score:
             best_score, best_color, best_shape = score, color, cand
             no_improve = 0
@@ -211,6 +232,28 @@ class Engine:
         self.canvas[:] = initial_canvas
 
         self.shapes: list[Shape] = []
+
+        # Edge-weighted importance map: built ONCE from the target so the
+        # scoring functions can boost contribution from edges (eyes, mouths,
+        # thin outlines). Folds the alpha mask in too so transparent-buffer
+        # pixels stay 0. Stored as `_base_edge_weight` (immutable); the LIVE
+        # `edge_weight` shared-memory buffer starts at the base and is
+        # periodically reblended with the residual error map below so unfinished
+        # regions get boosted late in generation.
+        self._base_edge_weight: np.ndarray = compute_edge_weight(self.target, self.alpha_mask).astype(np.float32)
+        self._edge_weight_shm: shared_memory.SharedMemory | None = shared_memory.SharedMemory(
+            create=True, size=self._base_edge_weight.nbytes,
+        )
+        self.edge_weight = np.ndarray(
+            self._base_edge_weight.shape, dtype=np.float32, buffer=self._edge_weight_shm.buf,
+        )
+        self.edge_weight[:] = self._base_edge_weight
+
+        # self.rms is the user-facing "how close is the canvas to the target"
+        # number that shows in the GUI progress bar. Compute it WITHOUT the
+        # edge-weight so the displayed scale stays comparable to prior versions
+        # of FD6. The edge weight is still active inside score_shape — that's
+        # where it actually drives shape selection.
         self.rms = rms_error(self.canvas, self.target, self.alpha_mask)
         self.start_rms = self.rms
         self._stop = False
@@ -232,6 +275,7 @@ class Engine:
                 target_bytes, self.target.shape,
                 self._canvas_shm.name, self.canvas.shape,
                 alpha_bytes, alpha_shape,
+                self._edge_weight_shm.name, self.edge_weight.shape,
             ),
         )
 
@@ -256,12 +300,52 @@ class Engine:
     def seed_shapes(self, shapes: list[Shape]) -> None:
         """Resume mode: replay shapes onto the canvas before generation starts."""
         for s in shapes:
-            new_canvas, new_rms = composite(self.canvas, s, self.target, self.alpha_mask)
+            new_canvas, new_rms = composite(self.canvas, s, self.target, self.alpha_mask, self.edge_weight)
             self.canvas[:] = new_canvas  # write into shared memory
             self.rms = new_rms
             self.shapes.append(s)
 
-    def _parallel_search(self, types: list[str], n_random: int, n_mutate: int) -> tuple[float, Shape | None]:
+    # Residual reblend disabled in v0.4.0 — the size-schedule + edge-weight
+    # combination already moves enough budget into detail regions on its own;
+    # leaving the residual on top biased the back-half of generation toward
+    # smearing big shapes over high-error areas (the opposite of what we
+    # want). Flip RESIDUAL_REFRESH_EVERY back to a finite value to re-enable.
+    RESIDUAL_REFRESH_EVERY = 0
+    RESIDUAL_BOOST = 4.0
+
+    def _refresh_residual_weight(self) -> None:
+        """Reblend `self.edge_weight` (shared memory) with current residual error.
+
+        Per-pixel residual = mean abs diff(target, canvas) across RGB, in [0..1].
+        New weight = base * (1 + (RESIDUAL_BOOST - 1) * residual). Areas where
+        the canvas is already close to target stay at the base edge weight;
+        unfinished regions get up to RESIDUAL_BOOST× their original weight so
+        subsequent workers preferentially place shapes there.
+        """
+        diff = np.abs(self.canvas.astype(np.float32) - self.target.astype(np.float32)).mean(axis=2) / 255.0
+        boost = 1.0 + (self.RESIDUAL_BOOST - 1.0) * diff.astype(np.float32)
+        self.edge_weight[:] = self._base_edge_weight * boost
+
+    def _max_size_frac_for_progress(self, progress: float) -> float:
+        """Shape-size schedule. Monotonically decreasing across iteration progress.
+
+        Per-candidate scoring cost is O(bbox_area) and bbox area scales with
+        `max_size_frac²`, so an early tier with `max_size_frac=1.0` (canvas-
+        spanning shapes) is ~16× more expensive than the legacy `0.25`
+        default. The values below keep T1 noticeably larger than legacy (for
+        tonal coverage) without exploding scoring cost at higher
+        max_resolutions (4K / 8K targets).
+        """
+        if progress < 0.25:
+            return 0.30        # 0–25%: ~30% canvas — modest bump over legacy for tonal blocks
+        if progress < 0.50:
+            return 0.22        # 26–50%: ~22% canvas
+        if progress < 0.75:
+            return 0.15        # 51–75%: ~15% canvas
+        return 0.10            # 76–100%: 10% canvas — fine detail only
+
+    def _parallel_search(self, types: list[str], n_random: int, n_mutate: int,
+                         max_size_frac: float | None = None) -> tuple[float, Shape | None]:
         """Dispatch N independent FULL searches in parallel; return (best_score, best_shape).
 
         Each worker does the FULL `random_samples` random search (not a slice of
@@ -279,7 +363,7 @@ class Engine:
         n_mutate = max(1, n_mutate)
         args_list = [
             (types, n_random, n_mutate, self.w, self.h,
-             self.rng.randint(0, 2**31 - 1))
+             self.rng.randint(0, 2**31 - 1), max_size_frac)
             for _ in range(self._n_workers)
         ]
         best_score = float("inf")
@@ -314,8 +398,12 @@ class Engine:
                 iter_types = [types[type_cursor % len(types)]]
                 type_cursor += 1
 
+                progress = len(self.shapes) / max(1, p.stop_at)
+                size_cap = self._max_size_frac_for_progress(progress)
+
                 refined_score, refined = self._parallel_search(
                     iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
+                    max_size_frac=size_cap,
                 )
 
                 # Sticker mode: refined must fit essentially entirely inside
@@ -328,6 +416,7 @@ class Engine:
                             break
                         refined_score, refined = self._parallel_search(
                             iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
+                            max_size_frac=size_cap,
                         )
                         sticker_attempts += 1
                     else:
@@ -354,11 +443,18 @@ class Engine:
 
                 # Commit. Update shared canvas in place so next iteration's
                 # workers see the new state on their next read.
-                new_canvas, new_rms = composite(self.canvas, refined, self.target, self.alpha_mask)
+                new_canvas, new_rms = composite(self.canvas, refined, self.target, self.alpha_mask, self.edge_weight)
                 self.canvas[:] = new_canvas
                 self.rms = new_rms
                 self.shapes.append(refined)
                 count = len(self.shapes)
+
+                # Periodic completeness check (currently disabled — see
+                # RESIDUAL_REFRESH_EVERY note). When > 0, recomputes the
+                # importance map so under-painted regions get extra weight on
+                # the next batch of worker searches.
+                if self.RESIDUAL_REFRESH_EVERY > 0 and count > 0 and count % self.RESIDUAL_REFRESH_EVERY == 0:
+                    self._refresh_residual_weight()
 
                 yield EngineEvent(kind="shape_committed", shape_count=count, rms=self.rms)
 
@@ -384,6 +480,13 @@ class Engine:
                 self._canvas_shm.close()
                 self._canvas_shm.unlink()
                 self._canvas_shm = None
+        except Exception:
+            pass
+        try:
+            if self._edge_weight_shm is not None:
+                self._edge_weight_shm.close()
+                self._edge_weight_shm.unlink()
+                self._edge_weight_shm = None
         except Exception:
             pass
 

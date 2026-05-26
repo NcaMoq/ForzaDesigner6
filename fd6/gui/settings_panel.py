@@ -78,12 +78,14 @@ class SettingsPanel(QWidget):
             "try in order to refine it. Higher = each shape is positioned more "
             "precisely but generation is slower. 200 is a good default."
         )
-        self.max_resolution = QSpinBox(); self.max_resolution.setRange(100, 4096); self.max_resolution.setValue(1200)
+        self.max_resolution = QSpinBox(); self.max_resolution.setRange(100, 8192); self.max_resolution.setValue(1200)
         self.max_resolution.setToolTip(
             "The biggest the image will be processed at, in pixels along the "
             "longer side. Higher = more accurate shape placement but uses way "
             "more memory and time. 1200 px is the sweet spot for most images. "
-            "Push to 2048 or 4096 only if the source is highly detailed."
+            "Push to 2048 / 4096 / 8192 only if the source is highly detailed — "
+            "8K-class targets need at least 32 GB of RAM and noticeably extend "
+            "generation time."
         )
         self.max_threads = QSpinBox(); self.max_threads.setRange(0, 64); self.max_threads.setValue(0)
         self.max_threads.setToolTip(

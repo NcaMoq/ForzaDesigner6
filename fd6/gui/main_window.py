@@ -242,6 +242,37 @@ class MainWindow(QMainWindow):
             self._font_group.addAction(a)
             fonts_menu.addAction(a)
 
+        # --- Localization submenu (v0.4.0 scaffolding — translations land later) ---
+        # English is the only working option right now; the rest are listed
+        # disabled with a "(coming soon)" suffix so the menu telegraphs the
+        # roadmap. Translation strings + Qt linguist .qm files will follow in a
+        # subsequent release.
+        loc_menu = view_menu.addMenu("&Localization")
+        self._loc_group = QActionGroup(self)
+        self._loc_group.setExclusive(True)
+        loc_options = [
+            ("English", True),
+            ("Spanish (Español)", False),
+            ("French (Français)", False),
+            ("German (Deutsch)", False),
+            ("Italian (Italiano)", False),
+            ("Portuguese (Português)", False),
+            ("Dutch (Nederlands)", False),
+            ("Polish (Polski)", False),
+            ("Russian (Русский)", False),
+            ("Japanese (日本語)", False),
+            ("Korean (한국어)", False),
+            ("Simplified Chinese (简体中文)", False),
+            ("Traditional Chinese (繁體中文)", False),
+            ("Arabic (العربية)", False),
+        ]
+        for label, enabled in loc_options:
+            act = QAction(label if enabled else f"{label} (coming soon)", self, checkable=True)
+            act.setEnabled(enabled)
+            act.setChecked(enabled)
+            self._loc_group.addAction(act)
+            loc_menu.addAction(act)
+
         # --- Customizations submenu (panel-swap toggles, persisted) ----------
         view_menu.addSeparator()
         custom_menu = view_menu.addMenu("&Customizations")
@@ -524,18 +555,19 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Forza Designer 6+",
-            f"<b>Forza Designer 6+</b><br>v0.3.5<br>"
+            f"<b>Forza Designer 6+</b><br>v0.4.0<br>"
             f"<i>For Forza Horizon 3 / 4 / 5 / 6 (FH6 build {FH6_TARGET_BUILD}) "
             f"and Assetto Corsa Competizione</i><br><br>"
             "Multi-game livery suite. Forza titles: live memory injection of "
             "vinyl-group shapes (position, scale, rotation, color). Assetto "
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
-            "v0.3.5 highlights: Assetto Corsa Competizione livery export, "
+            "v0.4.0 highlights: Assetto Corsa Competizione livery export, "
             "multi-game suite picker, expanded Forza target list "
             "(FH3 / FH4 / FH5 / FH6), 2 GiB memory-region read fix, "
-            "edge-buffer padding on all generations, and a per-type "
-            "diagnostic line in the injection result dialog.<br><br>"
+            "transparent edge-buffer padding on all generations, JBA Online "
+            "GameBoy Emulator banner CTA, and a per-type diagnostic line in "
+            "the injection result dialog.<br><br>"
             "Inspired by forza-painter (the_adawg), built on the techniques of "
             "geometrize-lib (Sam Twidale) and Primitive (Michael Fogleman). "
             "LiveryGroup discovery approach adapted from bvzrays/forza-painter-fh6.<br><br>"

@@ -10,6 +10,8 @@
   </a>
   <br/>
   <sub><a href="https://youtu.be/8LGvE7O9aeg">▶ Trailer / tutorial on YouTube</a></sub>
+  <br/>
+  <sub><a href="https://github.com/tokyubevoxelverse/ForzaDesignerRadioMaker/releases/tag/0.0.1-Alpha">🎵 Forza Designer Radio Maker — v0.0.1-Alpha release</a></sub>
 </p>
 
 <p align="center">

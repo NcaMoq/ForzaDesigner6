@@ -24,6 +24,7 @@ TUTORIAL_URL = "https://youtu.be/8LGvE7O9aeg"
 SUBSCRIBE_URL = "https://www.youtube.com/@DaMostPalone?sub_confirmation=1"
 DISCORD_INVITE_URL = "https://discord.gg/PJFWdykGmS"
 JBA_URL = "https://tokyubevoxelverse.github.io/gbajs4/"
+RADIO_MAKER_URL = "https://github.com/tokyubevoxelverse/ForzaDesignerRadioMaker/releases/tag/0.0.1-Alpha"
 
 
 def _bundle_root() -> Path:
@@ -63,13 +64,14 @@ class BrandBanner(QWidget):
     """Brand banner that sits in the bottom-left corner. Click panel to collapse / click pill to expand."""
 
     MARGIN = 12
-    # Height accommodates four CTA buttons stacked above the icon/title row:
+    # Height accommodates five CTA buttons stacked above the icon/title row:
     #   row 1: tokyube.com (rainbow)
     #   row 2: JBA Online GameBoy Emulator (tan -> brown)
-    #   row 3: Tutorial / Trailer (YouTube red)
-    #   row 4: Join the Imagineers (Discord orange)
-    #   row 5: icon + Forza Designer 6 title
-    BANNER_HEIGHT = 220
+    #   row 3: Forza Designer Radio Maker (neon purple)
+    #   row 4: Tutorial / Trailer (YouTube red)
+    #   row 5: Join the Imagineers (Discord orange)
+    #   row 6: icon + Forza Designer 6 title
+    BANNER_HEIGHT = 256
     BANNER_WIDTH = 260
     PILL_SIZE = 40
     CTA_HEIGHT = 30
@@ -147,7 +149,23 @@ class BrandBanner(QWidget):
         self.jba_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(JBA_URL)))
         outer.addWidget(self.jba_btn)
 
-        # ── CTA 3: Tutorial / Trailer (YouTube red, white play glyph) ────────
+        # ── CTA 3: Forza Designer Radio Maker (neon purple gradient) ─────────
+        self.radio_btn = QPushButton("🎵  Forza Designer Radio Maker", self.panel)
+        self.radio_btn.setCursor(Qt.PointingHandCursor)
+        self.radio_btn.setFixedHeight(self.CTA_HEIGHT)
+        self.radio_btn.setStyleSheet(
+            "QPushButton {"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            "  stop:0 #c084fc, stop:0.5 #7c3aed, stop:1 #3d0fa0);"
+            " color: #ffffff; font-weight: bold; letter-spacing: 0.5px;"
+            " border: 1px solid #2a0a6e; border-radius: 6px; padding: 0 10px; }"
+            "QPushButton:hover { border-color: #ffffff; }"
+        )
+        self.radio_btn.setToolTip(f"Open the Forza Designer Radio Maker release page ({RADIO_MAKER_URL})")
+        self.radio_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(RADIO_MAKER_URL)))
+        outer.addWidget(self.radio_btn)
+
+        # ── CTA 4: Tutorial / Trailer (YouTube red, white play glyph) ────────
         self.tutorial_btn = QPushButton("▶  Tutorial / Trailer", self.panel)
         self.tutorial_btn.setCursor(Qt.PointingHandCursor)
         self.tutorial_btn.setFixedHeight(self.CTA_HEIGHT)
